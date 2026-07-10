@@ -229,20 +229,31 @@ async function launchChrome() {
         detached: true,
         stdio: ['ignore', 'ignore', errStream]
     });
+    let chromeClosed = false;
+    let chromeExitDetails = '';
     chrome.on('error', (err) => {
         console.error('Chrome spawn error:', err);
     });
+    chrome.on('close', (code, signal) => {
+        chromeClosed = true;
+        chromeExitDetails = `exitCode=${code}, signal=${signal || 'none'}`;
+    });
     chrome.unref();
     console.log('正在等待 Chrome 初始化...');
-    for (let i = 0; i < 20; i++) {
+    for (let i = 0; i < 40; i++) {
+        if (chromeClosed) break;
         if (await checkPort(DEBUG_PORT)) break;
         await new Promise(r => setTimeout(r, 1000));
     }
     if (!await checkPort(DEBUG_PORT)) {
         try {
+            fs.closeSync(errStream);
             const errLog = fs.readFileSync(errLogPath, 'utf8');
             console.error('Chrome 启动报错信息:\n', errLog);
         } catch (e) {}
+        if (chromeExitDetails) {
+            console.error('Chrome 进程已退出:', chromeExitDetails);
+        }
         throw new Error('Chrome 启动失败');
     }
 }
