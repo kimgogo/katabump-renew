@@ -81,7 +81,7 @@ const CHROME_PATH = process.env.CHROME_PATH || '/usr/bin/google-chrome';
 const DEBUG_PORT = 9222;
 const VIEWPORT_WIDTH = 1280;
 const VIEWPORT_HEIGHT = 720;
-const RENEW_MAX_ATTEMPTS = 3;
+const RENEW_MAX_ATTEMPTS = 5;
 process.env.NO_PROXY = 'localhost,127.0.0.1';
 
 const HTTP_PROXY = process.env.HTTP_PROXY;
@@ -214,7 +214,8 @@ async function launchChrome() {
         '--no-sandbox',
         '--disable-setuid-sandbox',
         `--user-data-dir=/tmp/chrome_user_data_${Date.now()}`,
-        '--disable-dev-shm-usage'
+        '--disable-dev-shm-usage',
+        '--remote-allow-origins=*'
     ];
     if (process.env.SUB_URL) {
         args.push('--proxy-server=http://127.0.0.1:7890');
@@ -229,31 +230,20 @@ async function launchChrome() {
         detached: true,
         stdio: ['ignore', 'ignore', errStream]
     });
-    let chromeClosed = false;
-    let chromeExitDetails = '';
     chrome.on('error', (err) => {
         console.error('Chrome spawn error:', err);
     });
-    chrome.on('close', (code, signal) => {
-        chromeClosed = true;
-        chromeExitDetails = `exitCode=${code}, signal=${signal || 'none'}`;
-    });
     chrome.unref();
     console.log('正在等待 Chrome 初始化...');
-    for (let i = 0; i < 40; i++) {
-        if (chromeClosed) break;
+    for (let i = 0; i < 20; i++) {
         if (await checkPort(DEBUG_PORT)) break;
         await new Promise(r => setTimeout(r, 1000));
     }
     if (!await checkPort(DEBUG_PORT)) {
         try {
-            fs.closeSync(errStream);
             const errLog = fs.readFileSync(errLogPath, 'utf8');
             console.error('Chrome 启动报错信息:\n', errLog);
         } catch (e) {}
-        if (chromeExitDetails) {
-            console.error('Chrome 进程已退出:', chromeExitDetails);
-        }
         throw new Error('Chrome 启动失败');
     }
 }
@@ -972,7 +962,7 @@ async function switchMihomoProxy(name) {
 
         let accountSuccess = false;
         let accountFailureReason = "未知错误";
-        const maxAttempts = (SUB_URL && proxyPool.length > 1) ? 3 : 1;
+        const maxAttempts = (SUB_URL && proxyPool.length > 1) ? 5 : 3;
         let page = null;
         let usedNode = 'DIRECT';
         
@@ -1176,18 +1166,53 @@ async function switchMihomoProxy(name) {
                             await page.waitForTimeout(2000);
                             if (!await modal.isVisible()) {
                                 console.log('   >> ✅ Renew successful!');
+                                
+                                console.log('   >> 尝试获取续期后的精确日期...');
+                                await page.reload();
+                                await page.waitForTimeout(3000);
+                                
+                                let accurateDate = "已续期(待下次更新)";
+                                let accurateDays = "约30";
+                                try {
+                                    const renewBtnCheck = page.getByRole('button', { name: 'Renew', exact: true }).first();
+                                    if (await renewBtnCheck.isVisible()) {
+                                        await renewBtnCheck.click();
+                                        await page.waitForTimeout(2000);
+                                        const notTimeLocCheck = page.getByText("You can't renew your server yet");
+                                        if (await notTimeLocCheck.isVisible({ timeout: 3000 })) {
+                                            const text = await notTimeLocCheck.innerText().catch(() => '');
+                                            const match = text.match(/as of\s+(.*?)\s+\(/);
+                                            if (match) {
+                                                accurateDate = match[1];
+                                                let currentYear = new Date().getFullYear();
+                                                let nextD = new Date(`${accurateDate} ${currentYear}`);
+                                                if (!isNaN(nextD.getTime())) {
+                                                    let diff = Math.ceil((nextD.getTime() - Date.now()) / (1000 * 3600 * 24));
+                                                    if (diff < -180) {
+                                                        nextD = new Date(`${accurateDate} ${currentYear + 1}`);
+                                                        diff = Math.ceil((nextD.getTime() - Date.now()) / (1000 * 3600 * 24));
+                                                    }
+                                                    accurateDays = diff;
+                                                }
+                                                renewDates[dedupeKey] = accurateDate;
+                                            }
+                                        }
+                                    }
+                                } catch(e) {
+                                    console.log("   >> 获取精确日期失败: " + e.message);
+                                }
+                                
                                 const successScreenshot = path.join(photoDir, `${safeUsername}_success.png`);
                                 try { await saveViewportScreenshot(page, successScreenshot); } catch (e) {}
-                                await sendTelegramMessage(`✅ *${escapeMarkdown(user.username)}*\n续期成功！`, successScreenshot);
+                                await sendTelegramMessage(`✅ *${escapeMarkdown(user.username)}*\n续期成功！有效期更新至: ${accurateDate}`, successScreenshot);
                                 renewPhaseSuccess = true;
                                 stats.success++;
                                 
-                                delete renewDates[dedupeKey];
                                 saveRenewDates(renewDates);
                                 accountDatesInfo[user.username] = {
                                     status: "✅ 续期成功",
-                                    nextDate: "已续期(待下次更新)",
-                                    daysLeft: "约30",
+                                    nextDate: accurateDate,
+                                    daysLeft: accurateDays,
                                     node: usedNode
                                 };
                                 break;
