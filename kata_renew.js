@@ -1474,7 +1474,7 @@ async function switchMihomoProxy(name) {
 
         let accountSuccess = false;
         let accountFailureReason = "未知错误";
-        const maxAttempts = (proxyPool.length > 1) ? 5 : 3;
+        const maxAttempts = (proxyPool.length > 1) ? 50 : 3;
         let page = null;
         let usedNode = 'DIRECT';
 
